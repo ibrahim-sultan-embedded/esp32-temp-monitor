@@ -2,42 +2,57 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "esp_log.h"
 
-QueueHandle_t temp_queue;
+static const char *TAG = "TEMP_MONITOR";
 
-void sensor_task(void *pv)
+typedef struct {
+    int temp_c;
+    uint32_t ts_ms;
+} temp_msg_t;
+
+static QueueHandle_t temp_queue;
+
+static void sensor_task(void *pv)
 {
-    int temperature = 25;
+    (void)pv;
+    int temp = 25;
 
-    while (1)
-    {
-        temperature++;
+    while (1) {
+        temp_msg_t msg = {
+            .temp_c = ++temp,
+            .ts_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS),
+        };
 
-        xQueueSend(temp_queue, &temperature, portMAX_DELAY);
-
-        printf("Sensor sent: %d\n", temperature);
+        xQueueSend(temp_queue, &msg, portMAX_DELAY);
+        ESP_LOGI(TAG, "Sensor sent: %dC at %lu ms", msg.temp_c, (unsigned long)msg.ts_ms);
 
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 
-void logger_task(void *pv)
+static void logger_task(void *pv)
 {
-    int received_temp;
+    (void)pv;
+    temp_msg_t msg;
 
-    while (1)
-    {
-        if (xQueueReceive(temp_queue, &received_temp, portMAX_DELAY))
-        {
-            printf("Logger received: %d\n", received_temp);
+    while (1) {
+        if (xQueueReceive(temp_queue, &msg, portMAX_DELAY)) {
+            ESP_LOGI(TAG, "Logger received: %dC (ts=%lu ms)", msg.temp_c, (unsigned long)msg.ts_ms);
         }
     }
 }
 
 void app_main(void)
 {
-    temp_queue = xQueueCreate(5, sizeof(int));
+    ESP_LOGI(TAG, "Boot OK. Creating queue + tasks...");
 
-    xTaskCreate(sensor_task, "sensor", 2048, NULL, 5, NULL);
-    xTaskCreate(logger_task, "logger", 2048, NULL, 5, NULL);
+    temp_queue = xQueueCreate(8, sizeof(temp_msg_t));
+    if (!temp_queue) {
+        ESP_LOGE(TAG, "Failed to create queue");
+        return;
+    }
+
+    xTaskCreate(sensor_task, "sensor_task", 4096, NULL, 5, NULL);
+    xTaskCreate(logger_task, "logger_task", 4096, NULL, 5, NULL);
 }
